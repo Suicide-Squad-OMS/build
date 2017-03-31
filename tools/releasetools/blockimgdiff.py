@@ -438,7 +438,7 @@ class BlockImageDiff(object):
             stashes[sh] -= 1
             if stashes[sh] == 0:
               free_size += sr.size()
-              free_string.append("free %s\n" % (sh))
+              free_string.append("free %s\n" % sh)
               stashes.pop(sh)
           heapq.heappush(free_stash_ids, sid)
 
@@ -557,7 +557,7 @@ class BlockImageDiff(object):
         cache_size = common.OPTIONS.cache_size
         stash_threshold = common.OPTIONS.stash_threshold
         max_allowed = cache_size * stash_threshold
-        assert max_stashed_blocks * self.tgt.blocksize <= max_allowed, \
+        assert max_stashed_blocks * self.tgt.blocksize < max_allowed, \
                'Stash size %d (%d * %d) exceeds the limit %d (%d * %.2f)' % (
                    max_stashed_blocks * self.tgt.blocksize, max_stashed_blocks,
                    self.tgt.blocksize, max_allowed, cache_size,
@@ -697,17 +697,12 @@ class BlockImageDiff(object):
       for xf in self.transfers:
         if xf.style == "zero":
           tgt_size = xf.tgt_ranges.size() * self.tgt.blocksize
-          print("%10d %10d (%6.2f%%) %7s %s" % (
-              tgt_size, tgt_size, 100.0, xf.style, xf.tgt_name))
-
+        
         elif xf.style == "new":
           for piece in self.tgt.ReadRangeSet(xf.tgt_ranges):
             new_f.write(piece)
           tgt_size = xf.tgt_ranges.size() * self.tgt.blocksize
-          print("%10d %10d (%6.2f%%) %7s %s" % (
-              tgt_size, tgt_size, 100.0, xf.style,
-              xf.tgt_name))
-
+         
         elif xf.style == "diff":
           src = self.src.ReadRangeSet(xf.src_ranges)
           tgt = self.tgt.ReadRangeSet(xf.tgt_ranges)
@@ -734,12 +729,7 @@ class BlockImageDiff(object):
             # These are identical; we don't need to generate a patch,
             # just issue copy commands on the device.
             xf.style = "move"
-            if xf.src_ranges != xf.tgt_ranges:
-              print("%10d %10d (%6.2f%%) %7s %s %s (from %s)" % (
-                  tgt_size, tgt_size, 100.0, xf.style,
-                  xf.tgt_name if xf.tgt_name == xf.src_name else (
-                      xf.tgt_name + " (from " + xf.src_name + ")"),
-                  str(xf.tgt_ranges), str(xf.src_ranges)))
+            
           else:
             # For files in zip format (eg, APKs, JARs, etc.) we would
             # like to use imgdiff -z if possible (because it usually
@@ -786,12 +776,7 @@ class BlockImageDiff(object):
           patch = compute_patch(src, tgt, imgdiff=(xf.style == "imgdiff"))
           size = len(patch)
           with lock:
-            patches[patchnum] = (patch, xf)
-            print("%10d %10d (%6.2f%%) %7s %s %s %s" % (
-                size, tgt_size, size * 100.0 / tgt_size, xf.style,
-                xf.tgt_name if xf.tgt_name == xf.src_name else (
-                    xf.tgt_name + " (from " + xf.src_name + ")"),
-                str(xf.tgt_ranges), str(xf.src_ranges)))
+            patches[patchnum] = (patch, xf)         
 
       threads = [threading.Thread(target=diff_worker)
                  for _ in range(self.threads)]
@@ -999,11 +984,8 @@ class BlockImageDiff(object):
       heap.append(xf.heap_item)
     heapq.heapify(heap)
 
-    # Use OrderedDict() instead of set() to preserve the insertion order. Need
-    # to use 'sinks[key] = None' to add key into the set. sinks will look like
-    # { key1: None, key2: None, ... }.
-    sinks = OrderedDict.fromkeys(u for u in G if not u.outgoing)
-    sources = OrderedDict.fromkeys(u for u in G if not u.incoming)
+    sinks = set(u for u in G if not u.outgoing)
+    sources = set(u for u in G if not u.incoming)
 
     def adjust_score(iu, delta):
       iu.score += delta
@@ -1014,28 +996,26 @@ class BlockImageDiff(object):
     while G:
       # Put all sinks at the end of the sequence.
       while sinks:
-        new_sinks = OrderedDict()
+        new_sinks = set()
         for u in sinks:
           if u not in G: continue
           s2.appendleft(u)
           del G[u]
           for iu in u.incoming:
             adjust_score(iu, -iu.outgoing.pop(u))
-            if not iu.outgoing:
-              new_sinks[iu] = None
+            if not iu.outgoing: new_sinks.add(iu)
         sinks = new_sinks
 
       # Put all the sources at the beginning of the sequence.
       while sources:
-        new_sources = OrderedDict()
+        new_sources = set()
         for u in sources:
           if u not in G: continue
           s1.append(u)
           del G[u]
           for iu in u.outgoing:
             adjust_score(iu, +iu.incoming.pop(u))
-            if not iu.incoming:
-              new_sources[iu] = None
+            if not iu.incoming: new_sources.add(iu)
         sources = new_sources
 
       if not G: break
@@ -1054,13 +1034,11 @@ class BlockImageDiff(object):
       del G[u]
       for iu in u.outgoing:
         adjust_score(iu, +iu.incoming.pop(u))
-        if not iu.incoming:
-          sources[iu] = None
+        if not iu.incoming: sources.add(iu)
 
       for iu in u.incoming:
         adjust_score(iu, -iu.outgoing.pop(u))
-        if not iu.outgoing:
-          sinks[iu] = None
+        if not iu.outgoing: sinks.add(iu)
 
     # Now record the sequence in the 'order' field of each transfer,
     # and by rearranging self.transfers to be in the chosen sequence.
@@ -1079,7 +1057,8 @@ class BlockImageDiff(object):
 
     # Each item of source_ranges will be:
     #   - None, if that block is not used as a source,
-    #   - an ordered set of transfers.
+    #   - a transfer, if one transfer uses it as a source, or
+    #   - a set of transfers.
     source_ranges = []
     for b in self.transfers:
       for s, e in b.src_ranges:
@@ -1087,19 +1066,23 @@ class BlockImageDiff(object):
           source_ranges.extend([None] * (e-len(source_ranges)))
         for i in range(s, e):
           if source_ranges[i] is None:
-            source_ranges[i] = OrderedDict.fromkeys([b])
+            source_ranges[i] = b
           else:
-            source_ranges[i][b] = None
+            if not isinstance(source_ranges[i], set):
+              source_ranges[i] = set([source_ranges[i]])
+            source_ranges[i].add(b)
 
     for a in self.transfers:
-      intersections = OrderedDict()
+      intersections = set()
       for s, e in a.tgt_ranges:
         for i in range(s, e):
           if i >= len(source_ranges): break
-          # Add all the Transfers in source_ranges[i] to the (ordered) set.
-          if source_ranges[i] is not None:
-            for j in source_ranges[i]:
-              intersections[j] = None
+          b = source_ranges[i]
+          if b is not None:
+            if isinstance(b, set):
+              intersections.update(b)
+            else:
+              intersections.add(b)
 
       for b in intersections:
         if a is b: continue
